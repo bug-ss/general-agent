@@ -13,7 +13,11 @@ dependencies = [
     "langchain-core>=1.0,<2.0",
     "langgraph>=1.0,<2.0",
     # Custom middleware: fails over to the next model on HTTP 429.
-    "ratelimit-fallback @ git+https://github.com/bug-ss/ratelimit-fallback.git",
+    # Pinned to a commit, not a branch: the project publishes no tags or
+    # releases yet, and its version has stayed 0.1.0 across changes, so an
+    # unpinned URL would install whatever HEAD happens to be and give two
+    # people different code from the same command. Bump this deliberately.
+    "ratelimit-fallback @ git+https://github.com/bug-ss/ratelimit-fallback.git@360a4559cc413b11779c5fcedcf1726d2aa3eca5",
     # Observability.
     "langfuse>=4.0",
     "python-dotenv>=1.0",

@@ -55,6 +55,12 @@ pip install -e ".[google]"
 ```
 
 The middleware is pulled straight from GitHub, so `pip` needs `git` available.
+It is **pinned to a commit** rather than tracking a branch: the project publishes
+no tags or releases yet and its version has stayed `0.1.0` across changes, so an
+unpinned URL would install whatever `HEAD` happens to be — two people running the
+same command on different days would get different code, with nothing in the
+package metadata to tell them apart. To take a newer middleware, bump the SHA in
+`pyproject.toml` deliberately and re-run the tests.
 
 ## Configuration
 
