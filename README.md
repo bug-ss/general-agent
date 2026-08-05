@@ -171,13 +171,13 @@ What each piece buys you:
   (`answer-question`, `generate-response`); the model is recorded as the
   generation's `model` attribute, where cost and token accounting expect it.
 
-  Getting that to hold needed a fix at this layer. The middleware sets the name
-  with `.with_config(run_name=...)`, but `create_agent` then calls
-  `request.model.bind_tools(...)`, which on a `RunnableBinding` resolves through
-  to the underlying chat model and returns a fresh binding with an empty config
-  — silently dropping the name for any agent that has tools. `_NamedModel` in
-  `agent.py` re-applies it *after* binding, and `tests/test_agent.py` pins the
-  behaviour both ways.
+  The middleware delivers this via `generation_name`. It is worth pinning here
+  too, because this app is what breaks if it regresses — and it did once: a
+  tool-using agent binds tools to the model, which used to discard the run name
+  and send every generation back to being named after its model.
+  `tests/test_agent.py` asserts the name over both `tools=[]` and
+  `tools=[...]`, reading it from the same callback field Langfuse names
+  observations from.
 - **The failover is a step, not a silence.** Without the `on_rate_limit` hook, a
   trace shows one successful generation and no hint that the primary model was
   ever limited.

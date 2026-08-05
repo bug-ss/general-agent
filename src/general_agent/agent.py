@@ -11,7 +11,6 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_model_call
 from langgraph.checkpoint.memory import InMemorySaver
 
 from general_agent.config import Settings
@@ -21,13 +20,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from ratelimit_fallback import RateLimitEvent
 
-__all__ = [
-    "GENERATION_NAME",
-    "build_agent",
-    "build_middleware",
-    "build_model_chain",
-    "stable_generation_name",
-]
+__all__ = ["GENERATION_NAME", "build_agent", "build_middleware", "build_model_chain"]
 
 logger = logging.getLogger(__name__)
 
@@ -67,63 +60,6 @@ def build_model_chain(settings: Settings) -> list[Any]:
     return chain
 
 
-class _NamedModel:
-    """Delegating wrapper that keeps a run name attached across tool binding.
-
-    ``RateLimitFallbackMiddleware`` applies ``.with_config(run_name=...)`` so
-    every generation reports under one stable name. That wrapper does not
-    survive an agent that has tools: ``create_agent`` calls
-    ``request.model.bind_tools(...)``, which on a ``RunnableBinding`` resolves
-    straight through to the underlying chat model and returns a fresh binding
-    with an empty config — dropping the run name, and with it the stable
-    observation name in Langfuse.
-
-    Re-applying the name *after* binding is what makes it stick. Everything
-    other than ``bind`` / ``bind_tools`` is delegated to the real model.
-    """
-
-    __slots__ = ("_model", "_run_name")
-
-    def __init__(self, model: Any, run_name: str) -> None:
-        object.__setattr__(self, "_model", model)
-        object.__setattr__(self, "_run_name", run_name)
-
-    def bind_tools(self, *args: Any, **kwargs: Any) -> Any:
-        bound = self._model.bind_tools(*args, **kwargs)
-        return bound.with_config(run_name=self._run_name)
-
-    def bind(self, **kwargs: Any) -> Any:
-        return self._model.bind(**kwargs).with_config(run_name=self._run_name)
-
-    def with_config(self, *args: Any, **kwargs: Any) -> Any:
-        return self._model.with_config(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._model, name)
-
-    def __repr__(self) -> str:
-        return f"_NamedModel({self._model!r}, run_name={self._run_name!r})"
-
-
-def stable_generation_name(run_name: str = GENERATION_NAME) -> Any:
-    """Middleware giving every model call the same observation name.
-
-    Langfuse's [best practices](https://langfuse.com/docs/observability/best-practices)
-    warn against names that follow the model: evaluators, dashboards and saved
-    filters target observations *by name*, so a model-derived name breaks the
-    moment the model changes. Under 429 failover it changes run to run.
-
-    Must sit **after** the failover middleware in the stack so that it wraps
-    whichever model that one selected.
-    """
-
-    @wrap_model_call(name=f"stable-generation-name[{run_name}]")
-    def middleware(request: Any, handler: Callable[[Any], Any]) -> Any:
-        return handler(request.override(model=_NamedModel(request.model, run_name)))
-
-    return middleware
-
-
 def build_middleware(
     settings: Settings,
     *,
@@ -149,13 +85,14 @@ def build_middleware(
         cooldown_scope="account" if settings.account_scoped_cooldown else "route",
         respect_retry_after=settings.respect_retry_after,
         on_rate_limit=on_rate_limit,
+        # One stable observation name for every model call. Left to the
+        # tracing integration's default, each generation would be named after
+        # whichever model served it — so under failover the name changes from
+        # trace to trace, breaking any filter or evaluator targeting it.
         generation_name=GENERATION_NAME,
         environ=settings.environ,
     )
-    # Inner, so it wraps whichever model the failover middleware picked. This
-    # is what actually makes generation_name survive tool binding — see
-    # _NamedModel.
-    return [fallback, stable_generation_name(GENERATION_NAME)]
+    return [fallback]
 
 
 def build_agent(

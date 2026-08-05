@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+from langchain.agents import create_agent
+from langchain_core.tools import tool
 from ratelimit_fallback import ModelPool, RateLimitFallbackMiddleware
 
 from general_agent.agent import (
     GENERATION_NAME,
-    _NamedModel,
     build_agent,
     build_middleware,
     build_model_chain,
 )
 from general_agent.config import Settings
-from tests.conftest import FakeChatModel, FakeRateLimitError
+from tests.conftest import FakeChatModel, FakeRateLimitError, NameRecorder
 
 
 def test_model_chain_passes_strings_through(settings: Settings) -> None:
@@ -53,41 +55,46 @@ def test_middleware_uses_a_stable_generation_name(settings: Settings) -> None:
     assert build_middleware(settings)[0].generation_name == GENERATION_NAME
 
 
-def test_stable_name_middleware_is_inner(settings: Settings) -> None:
-    """It has to wrap whichever model the failover middleware selected."""
-    middleware = build_middleware(settings)
-    assert len(middleware) == 2
-    assert isinstance(middleware[0], RateLimitFallbackMiddleware)
+def test_only_the_failover_middleware_is_needed(settings: Settings) -> None:
+    """The stable-name workaround is gone; the middleware handles it upstream."""
+    assert len(build_middleware(settings)) == 1
 
 
-def test_run_name_survives_tool_binding() -> None:
-    """The regression this wrapper exists for.
+@tool
+def _echo(text: str) -> str:
+    """Echo the text back."""
+    return text
 
-    ``.with_config(run_name=...)`` alone is not enough: ``bind_tools`` on a
-    ``RunnableBinding`` resolves through to the underlying chat model and
-    returns a fresh binding with an empty config, so the name — and with it the
-    stable observation name in Langfuse — is silently lost.
+
+@pytest.mark.parametrize("tools", [[], [_echo]], ids=["no-tools", "with-tools"])
+def test_every_model_call_reports_a_stable_name(tools: list) -> None:
+    """The property the traces depend on, asserted at this layer.
+
+    Named observations are what Langfuse filters, dashboards and evaluators
+    target, so the name must not follow whichever model failover landed on.
+    The fix lives in the middleware, but this app is what breaks if it
+    regresses — including via a LangChain change to how tools are bound, which
+    is exactly how it broke before (``bind_tools`` dropped the run name for
+    tool-using agents, leaving each generation named after its model).
     """
-    model = FakeChatModel(name="primary")
+    primary = FakeChatModel(name="primary", error=FakeRateLimitError())
+    backup = FakeChatModel(name="backup", reply="done")
 
-    plain = model.with_config(run_name=GENERATION_NAME).bind_tools([])
-    assert plain.config.get("run_name") is None  # the behaviour being worked around
+    middleware = RateLimitFallbackMiddleware(
+        models=[primary, backup],
+        try_request_model_first=False,
+        generation_name=GENERATION_NAME,
+    )
+    agent = create_agent(model=primary, tools=tools, middleware=[middleware])
 
-    named = _NamedModel(model, GENERATION_NAME).bind_tools([])
-    assert named.config["run_name"] == GENERATION_NAME
+    recorder = NameRecorder()
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "hello"}]},
+        config={"callbacks": [recorder]},
+    )
 
-
-def test_named_model_preserves_the_name_without_tools() -> None:
-    """Agents with no tools take the ``bind`` path instead of ``bind_tools``."""
-    bound = _NamedModel(FakeChatModel(name="primary"), GENERATION_NAME).bind()
-    assert bound.config["run_name"] == GENERATION_NAME
-
-
-def test_named_model_delegates_everything_else() -> None:
-    model = FakeChatModel(name="primary")
-    wrapper = _NamedModel(model, GENERATION_NAME)
-    assert wrapper.model_name == "primary"
-    assert wrapper._llm_type == "fake"
+    assert recorder.names, "no model call was recorded"
+    assert set(recorder.names) == {GENERATION_NAME}, recorder.names
 
 
 def test_agent_fails_over_to_the_next_model_on_429() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -49,8 +50,24 @@ class FakeChatModel(BaseChatModel):
     def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
         # Deliberately the same shape as a real provider's: BaseChatModel.bind
         # returns a binding around the *raw* model with an empty config, which
-        # is exactly what drops a run name applied further out.
+        # is exactly what drops a run name applied further out. A fake that
+        # returned ``self`` here would hide that whole class of regression.
         return self.bind(tools=tools, **kwargs)
+
+
+class NameRecorder(BaseCallbackHandler):
+    """Records the run name of every model call.
+
+    ``kwargs["name"]`` is the same value Langfuse's LangChain integration
+    reads to name a generation observation, so asserting on it pins the
+    observation name without needing a Langfuse client.
+    """
+
+    def __init__(self) -> None:
+        self.names: list[str | None] = []
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        self.names.append(kwargs.get("name"))
 
 
 @pytest.fixture
