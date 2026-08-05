@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
+
 from general_agent.config import Settings
 from general_agent.observability import NullObservability
 from general_agent.runner import AgentRunner, _as_text, _served_by
@@ -53,7 +55,9 @@ class StubAgent:
         self.model = model
         self.configs: list[dict[str, Any]] = []
 
-    def invoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        # Async because the runner is: tools onboarded from an MCP server have
+        # no synchronous implementation, so the whole run path has to be async.
         self.configs.append(config)
 
         class _Message:
@@ -157,6 +161,22 @@ def test_runs_without_tracing_configured() -> None:
     assert reply.text == "391"
     assert reply.trace_id is None
     assert not runner.tracing_enabled
+
+
+async def test_aask_is_the_async_entry_point() -> None:
+    """What the A2A server and any async caller uses."""
+    runner, _, _ = _runner()
+    reply = await runner.aask("hi")
+
+    assert reply.text == "391"
+
+
+async def test_ask_refuses_to_block_inside_a_running_loop() -> None:
+    """Better a clear error than a deadlock or a nested-loop crash."""
+    runner, _, _ = _runner()
+
+    with pytest.raises(RuntimeError, match="aask"):
+        runner.ask("hi")
 
 
 def test_block_content_is_flattened_to_text() -> None:

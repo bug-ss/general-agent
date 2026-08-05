@@ -87,6 +87,31 @@ class Settings:
     enable_web_search: bool = True
     max_search_results: int = 5
 
+    # --- MCP ---
+    #: Path to an ``mcpServers`` JSON file. ``None`` means "look for ./mcp.json
+    #: and use it if it exists" — an absent file is not an error.
+    mcp_config_path: str | None = None
+    #: Inline server definitions, same shape as the file. For containers and CI,
+    #: where mounting a file to add one server is more ceremony than it's worth.
+    mcp_servers_json: str | None = None
+    #: Fail startup when a configured MCP server cannot be reached. Off by
+    #: default: one unreachable server should cost you its tools, not the agent.
+    mcp_strict: bool = False
+    #: Prefix MCP tool names with their server name (``github_create_issue``).
+    #: On by default — two servers exposing ``search`` is entirely normal, and
+    #: an unprefixed collision silently shadows one of them.
+    mcp_tool_prefix: bool = True
+    #: How long to wait for one server to hand over its tool list.
+    mcp_startup_timeout: float = 30.0
+
+    # --- A2A server ---
+    a2a_host: str = "127.0.0.1"
+    a2a_port: int = 8080
+    #: Externally reachable base URL to advertise in the agent card. Set this
+    #: behind a proxy or in a container, where the bind address is not the
+    #: address other agents can actually reach.
+    a2a_url: str | None = None
+
     _environ: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
@@ -124,6 +149,14 @@ class Settings:
             sample_rate=_number(env, "LANGFUSE_SAMPLE_RATE", 1.0),
             enable_web_search=_flag(env, "AGENT_ENABLE_WEB_SEARCH", True),
             max_search_results=int(_number(env, "AGENT_MAX_SEARCH_RESULTS", 5)),
+            mcp_config_path=env.get("AGENT_MCP_CONFIG") or None,
+            mcp_servers_json=env.get("AGENT_MCP_SERVERS") or None,
+            mcp_strict=_flag(env, "AGENT_MCP_STRICT", False),
+            mcp_tool_prefix=_flag(env, "AGENT_MCP_TOOL_PREFIX", True),
+            mcp_startup_timeout=_number(env, "AGENT_MCP_STARTUP_TIMEOUT", 30.0),
+            a2a_host=env.get("AGENT_A2A_HOST") or "127.0.0.1",
+            a2a_port=int(_number(env, "AGENT_A2A_PORT", 8080)),
+            a2a_url=env.get("AGENT_A2A_URL") or None,
             _environ=env,
         )
 

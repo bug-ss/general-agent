@@ -20,7 +20,13 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from ratelimit_fallback import RateLimitEvent
 
-__all__ = ["GENERATION_NAME", "build_agent", "build_middleware", "build_model_chain"]
+__all__ = [
+    "GENERATION_NAME",
+    "build_agent",
+    "build_agent_tools",
+    "build_middleware",
+    "build_model_chain",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,33 @@ def build_middleware(
     return [fallback]
 
 
+def build_agent_tools(settings: Settings) -> list[BaseTool]:
+    """The built-in tools plus every tool the configured MCP servers expose.
+
+    MCP tools come last and lose any name collision. Two tools with one name is
+    not a resolvable situation — the model gets one schema and calls whichever
+    the framework happened to keep — so the local, known-good one wins and the
+    clash is logged. ``AGENT_MCP_TOOL_PREFIX`` (on by default) makes collisions
+    rare in the first place by namespacing MCP tools by server.
+    """
+    from general_agent.mcp import load_mcp_tools_blocking
+
+    tools = build_tools(
+        enable_web_search=settings.enable_web_search,
+        max_search_results=settings.max_search_results,
+    )
+    taken = {tool.name for tool in tools}
+
+    for tool in load_mcp_tools_blocking(settings):
+        if tool.name in taken:
+            logger.warning("MCP tool %r collides with an existing tool; skipping it", tool.name)
+            continue
+        taken.add(tool.name)
+        tools.append(tool)
+
+    return tools
+
+
 def build_agent(
     settings: Settings | None = None,
     *,
@@ -106,7 +139,8 @@ def build_agent(
 
     Args:
         settings: Configuration; read from the environment when omitted.
-        tools: Override the default tool set.
+        tools: Override the default tool set. Passing this skips MCP
+            onboarding entirely — you are supplying the full set.
         on_rate_limit: Called on every 429 failover. Pass
             ``Observability.on_rate_limit`` to record failovers on the trace.
         checkpointer: Conversation persistence. Defaults to an in-process
@@ -119,14 +153,7 @@ def build_agent(
     settings = settings or Settings.from_env()
     from ratelimit_fallback import build_chat_model
 
-    agent_tools = (
-        list(tools)
-        if tools is not None
-        else build_tools(
-            enable_web_search=settings.enable_web_search,
-            max_search_results=settings.max_search_results,
-        )
-    )
+    agent_tools = list(tools) if tools is not None else build_agent_tools(settings)
 
     return create_agent(
         # Built through ratelimit-fallback rather than passed as a bare

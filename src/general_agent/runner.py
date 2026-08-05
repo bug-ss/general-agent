@@ -7,6 +7,7 @@ question into one trace.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Sequence
@@ -75,7 +76,35 @@ class AgentRunner:
         user_id: str | None = None,
         tags: Sequence[str] = (),
     ) -> AgentReply:
-        """Answer one question, recording the whole run as a single trace."""
+        """Answer one question, recording the whole run as a single trace.
+
+        A blocking wrapper around :meth:`aask`, for scripts and the CLI.
+        Callers already inside an event loop must await :meth:`aask` instead —
+        there is no correct way to block on a coroutine from the loop running it.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.aask(question, user_id=user_id, tags=tags))
+
+        msg = "AgentRunner.ask() cannot be called from a running event loop; await aask() instead"
+        raise RuntimeError(msg)
+
+    async def aask(
+        self,
+        question: str,
+        *,
+        user_id: str | None = None,
+        tags: Sequence[str] = (),
+    ) -> AgentReply:
+        """Answer one question, recording the whole run as a single trace.
+
+        The agent is driven asynchronously because it has to be: tools loaded
+        from an MCP server are built with a coroutine and no synchronous
+        implementation, so a sync ``invoke`` would raise the moment the model
+        called one. The failover middleware implements ``awrap_model_call``
+        alongside its sync hook, so 429 handling is identical on this path.
+        """
         payload = {"messages": [{"role": "user", "content": question}]}
         config: dict[str, Any] = {
             "configurable": {"thread_id": self.session_id},
@@ -92,7 +121,7 @@ class AgentRunner:
             tags=self.settings.resolved_tags(tags),
             metadata={"model_chain": list(self.settings.models)},
         ) as span:
-            result = self.agent.invoke(payload, config=config)
+            result = await self.agent.ainvoke(payload, config=config)
             final = result["messages"][-1]
             text = _as_text(final.content)
             model = _served_by(final)

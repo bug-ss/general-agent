@@ -1,13 +1,19 @@
 # general-agent
 
 A generic [LangChain 1.0](https://docs.langchain.com/oss/python/langchain/overview) agent
-(`create_agent`) with two things a bare quickstart doesn't have:
+(`create_agent`) with four things a bare quickstart doesn't have:
 
 - **Rate-limit failover** — a custom middleware
   ([`bug-ss/ratelimit-fallback`](https://github.com/bug-ss/ratelimit-fallback)) that
   switches to the next model and retries whenever a provider answers HTTP 429.
 - **Langfuse tracing** — every run is one trace, with the failover visible as a
   first-class step rather than an invisible retry.
+- **MCP onboarding** — point it at any [MCP](https://modelcontextprotocol.io)
+  server and that server's tools become the agent's tools. No code, no restart
+  of anything but this process.
+- **A2A** — other agents can call this one over the
+  [Agent2Agent](https://a2a-protocol.org) protocol, discovering what it can do
+  from its agent card.
 
 ```bash
 pip install -e ".[all]"
@@ -26,11 +32,16 @@ with a small, safe default tool set that you extend in `src/general_agent/tools.
 | `current_datetime` | The real date/time in any IANA timezone, since the model's own is stale |
 | `tavily_search` | Web search, added only when `langchain-tavily` and `TAVILY_API_KEY` are both present |
 
-Two entry points:
+Plus whatever the MCP servers you configure expose — see
+[MCP servers](#mcp-servers).
+
+Four entry points:
 
 ```bash
 general-agent "What is 17 * 23?"   # one question, then exit
 general-agent                      # interactive chat, with :up / :down feedback
+general-agent --serve              # answer other agents over A2A
+general-agent --list-tools         # what the agent can do, MCP included
 ```
 
 ```python
@@ -42,16 +53,22 @@ with AgentRunner() as runner:                     # flushes traces on exit
     runner.feedback(reply, positive=True)
 ```
 
+`ask` blocks; `await runner.aask(...)` is the same thing from async code, and
+the one to use inside an event loop. The run path is async underneath because
+MCP tools have no synchronous implementation.
+
 ## Install
 
 Requires Python 3.11+.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[all]"          # both providers + web search
+pip install -e ".[all]"          # providers, web search, MCP and A2A
 # or pick what you need:
 pip install -e ".[openrouter]"
 pip install -e ".[google]"
+pip install -e ".[mcp]"          # onboard MCP servers
+pip install -e ".[a2a]"          # serve other agents
 ```
 
 The middleware is pulled straight from GitHub, so `pip` needs `git` available.
@@ -120,6 +137,124 @@ logs and traces.
 | `AGENT_ENABLE_WEB_SEARCH` | `true` | Include Tavily search when available |
 | `AGENT_MAX_SEARCH_RESULTS` | `5` | Results per search call |
 | `TAVILY_API_KEY` | — | Without it, search is silently left out of the tool set |
+
+### MCP
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AGENT_MCP_CONFIG` | `./mcp.json` if it exists | Path to an `mcpServers` JSON file |
+| `AGENT_MCP_SERVERS` | — | Inline server definitions; overrides the file on a name clash |
+| `AGENT_MCP_STRICT` | `false` | Fail startup when a configured server is unreachable |
+| `AGENT_MCP_TOOL_PREFIX` | `true` | Namespace MCP tool names by server |
+| `AGENT_MCP_STARTUP_TIMEOUT` | `30` | Seconds to wait for one server's tool list |
+
+### A2A
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AGENT_A2A_HOST` | `127.0.0.1` | Bind address |
+| `AGENT_A2A_PORT` | `8080` | Port |
+| `AGENT_A2A_URL` | — | The URL to advertise, when it differs from the bind address |
+
+## MCP servers
+
+Any MCP server's tools can become this agent's tools. Copy
+`mcp.json.example` to `mcp.json`, or point `AGENT_MCP_CONFIG` anywhere:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+    },
+    "internal-api": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${INTERNAL_API_TOKEN}" }
+    }
+  }
+}
+```
+
+```bash
+general-agent --list-tools
+```
+
+The format is the one Claude Desktop, VS Code and Cursor already use, so a
+server someone has running elsewhere is onboarded by copying its stanza across.
+`stdio`, `http` (streamable HTTP), `sse` and `websocket` all work; the transport
+is inferred from `command` or `url` when you don't say.
+
+The decisions worth knowing about:
+
+- **`${VAR}` is expanded from the environment**, and an unset variable is an
+  error rather than an empty string — `Authorization: Bearer ` fails as a 401
+  three layers from the cause. Tokens stay in `.env`; the config file stays
+  committable.
+- **One unreachable server costs you its tools, not the agent.** Servers are
+  contacted one at a time, and a failure is a warning. `AGENT_MCP_STRICT=true`
+  inverts that, which is the right setting when the deployment's whole job
+  depends on one of them.
+- **Tool names are namespaced by server** (`filesystem_read_file`). Two servers
+  exposing `search` is entirely normal, and an unprefixed collision silently
+  shadows one of them. A collision with a built-in tool is resolved in the
+  built-in's favour and logged.
+- **Unknown config keys are dropped with a warning.** They would otherwise be
+  forwarded as keyword arguments and blow up at the first tool call instead of
+  at startup.
+- **The whole run path is async.** The adapter builds MCP tools with a coroutine
+  and no sync implementation, so a synchronous `invoke` anywhere in the run
+  would raise the moment the model called one. `AgentRunner.ask` wraps
+  `aask`; the failover middleware implements `awrap_model_call` alongside its
+  sync hook, so 429 handling is unchanged.
+- **A session is opened per tool call.** That is the adapter's stateless
+  default, and the right trade here: a long-lived stdio subprocess owned by a
+  CLI that may sit idle for an hour costs more than it saves.
+
+## A2A: other agents calling this one
+
+```bash
+general-agent --serve --port 8080
+curl http://127.0.0.1:8080/.well-known/agent-card.json
+```
+
+The card advertises JSON-RPC and REST interfaces, and lists the agent's skills —
+**one per tool, MCP-onboarded ones included**. That is what makes the card worth
+fetching: onboard a server that talks to your internal API, and a remote agent
+can see this one can now do that, without anyone editing a description.
+
+```
+POST /a2a/jsonrpc     JSON-RPC   (A2A 1.0, with 0.3 compatibility)
+POST /a2a/rest/...    HTTP+JSON
+GET  /.well-known/agent-card.json
+```
+
+A request becomes a task, and the task reports where the work is: `submitted` →
+`working` → an artifact carrying the answer → `completed`, or `failed` with the
+error. The answer's artifact metadata carries the model that served it and the
+Langfuse trace id — the two things a caller debugging a bad answer cannot see
+from its own side.
+
+Two mappings make multi-turn work: the A2A `context_id` becomes both the
+LangGraph checkpointer thread and the Langfuse session id, so a second message
+on the same context reaches an agent that remembers the first, and the whole
+exchange reads as one session in the traces.
+
+Cancelling a task cancels the asyncio task running it, so an in-flight model
+call actually stops rather than continuing to bill against work nobody is
+waiting for.
+
+Note what this is not: serving A2A does not make this agent an A2A *client*.
+Nothing here calls out to other agents.
+
+> **The endpoint is unauthenticated and the card is public.** That is why the
+> default bind is loopback. Exposing it means putting a proxy in front that
+> terminates TLS and authenticates callers, and setting `AGENT_A2A_URL` to the
+> address that proxy answers on — otherwise the card advertises a bind address
+> nobody can reach. Tasks are stored in memory, so they are lost on restart and
+> invisible to a second replica; swap in a database-backed store before running
+> more than one.
 
 ## How the failover middleware fits in
 
@@ -256,19 +391,25 @@ trace-shape assertions in `tests/test_agent.py` are what tell you whether the ne
 middleware still produces the observation names this project's Langfuse
 dashboards depend on.
 
-The suite uses a fake chat model, synthetic 429s and a recording tracing backend,
-so it runs offline and makes no network calls.
+The suite runs offline and makes no network calls: a fake chat model, synthetic
+429s and a recording tracing backend. Two exceptions are local, not remote — the
+MCP tests spawn a real MCP server as a subprocess and talk to it over stdio, and
+the A2A tests drive the real ASGI app through Starlette's test client. Both are
+deliberate: what those features promise is that an arbitrary server's tools work
+and that another agent can reach this one, and a mock proves neither.
 
 ## Layout
 
 ```
 src/general_agent/
 ├── config.py          Settings.from_env() — all environment reading lives here
-├── tools.py           the agent's tools; add yours here
+├── tools.py           the agent's built-in tools; add yours here
+├── mcp.py             onboarding MCP servers as tools
 ├── agent.py           model chain, middleware stack, create_agent
+├── a2a_server.py      agent card, executor, ASGI app — serving other agents
 ├── observability.py   Langfuse client, callbacks, scores — and the no-op fallback
 ├── runner.py          AgentRunner: one question → one trace
-└── cli.py             one-shot and interactive entry points
+└── cli.py             one-shot, interactive, --serve and --list-tools
 
 scripts/
 └── check_middleware_pin.py   reports (or bumps) a stale middleware pin
@@ -283,3 +424,10 @@ coding agent working in this repo gets the same guidance:
   — LangChain/LangGraph fundamentals, middleware, dependencies, quickstarts.
 - [`langfuse/skills`](https://github.com/langfuse/skills) — the Langfuse skill,
   covering instrumentation, the CLI, error analysis and evaluation.
+
+There is no official skill pack for MCP onboarding or A2A. `langchain-skills`
+publishes neither, and the only MCP-related skill in the Anthropic library —
+`mcp-builder` — is about *writing* MCP servers, which is the opposite direction
+from consuming them. The A2A SDK ships a `.agents/skills/mistake-reflection`
+skill, but that is a contributor workflow for people working on the SDK itself.
+Both features here were built against the SDKs' own source instead.

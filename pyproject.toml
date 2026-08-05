@@ -29,14 +29,37 @@ dependencies = [
 openrouter = ["langchain-openai>=1.0"]
 google = ["langchain-google-genai>=3.0"]
 search = ["langchain-tavily>=0.1"]
+# Onboarding MCP servers as tools.
+#
+# The upper bound on `mcp` is not caution, it is a fact: adapters 0.3.1 imports
+# `mcp.shared.context.RequestContext`, which mcp 2.0 removed, so an unbounded
+# resolve installs a combination that fails at import. Drop the ceiling once
+# langchain-mcp-adapters supports mcp 2.x.
+mcp = [
+    "langchain-mcp-adapters>=0.3,<0.4",
+    "mcp>=1.24,<2.0",
+]
+# Serving this agent to other agents over A2A.
+a2a = [
+    "a2a-sdk[http-server]>=1.1,<2.0",
+    "uvicorn>=0.30",
+]
 all = [
     "langchain-openai>=1.0",
     "langchain-google-genai>=3.0",
     "langchain-tavily>=0.1",
+    "langchain-mcp-adapters>=0.3,<0.4",
+    "mcp>=1.24,<2.0",
+    "a2a-sdk[http-server]>=1.1,<2.0",
+    "uvicorn>=0.30",
 ]
 dev = [
     "langchain-openai>=1.0",
     "langchain-google-genai>=3.0",
+    "langchain-mcp-adapters>=0.3,<0.4",
+    "mcp>=1.24,<2.0",
+    "a2a-sdk[http-server]>=1.1,<2.0",
+    "uvicorn>=0.30",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",

@@ -9,8 +9,14 @@ with AgentRunner() as runner:
 ```
 """
 
-from general_agent.agent import build_agent, build_middleware, build_model_chain
+from general_agent.agent import (
+    build_agent,
+    build_agent_tools,
+    build_middleware,
+    build_model_chain,
+)
 from general_agent.config import Settings
+from general_agent.mcp import load_mcp_connections, load_mcp_tools
 from general_agent.observability import (
     NullObservability,
     Observability,
@@ -19,6 +25,9 @@ from general_agent.observability import (
 from general_agent.runner import AgentReply, AgentRunner
 from general_agent.tools import build_tools
 
+# `general_agent.a2a_server` is deliberately not imported here: it pulls in the
+# A2A SDK and Starlette, which are an optional extra. Import it directly when
+# you need it.
 __all__ = [
     "AgentReply",
     "AgentRunner",
@@ -26,10 +35,13 @@ __all__ = [
     "Observability",
     "Settings",
     "build_agent",
+    "build_agent_tools",
     "build_middleware",
     "build_model_chain",
     "build_observability",
     "build_tools",
+    "load_mcp_connections",
+    "load_mcp_tools",
 ]
 
 __version__ = "0.1.0"
