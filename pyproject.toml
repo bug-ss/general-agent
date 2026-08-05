@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "general-agent"
+version = "0.1.0"
+description = "A generic LangChain agent with rate-limit failover middleware and Langfuse tracing."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.0,<2.0",
+    "langchain-core>=1.0,<2.0",
+    "langgraph>=1.0,<2.0",
+    # Custom middleware: fails over to the next model on HTTP 429.
+    "ratelimit-fallback @ git+https://github.com/bug-ss/ratelimit-fallback.git",
+    # Observability.
+    "langfuse>=4.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Model providers. The middleware routes to OpenRouter (via langchain-openai)
+# and Google AI Studio; install whichever you actually use.
+openrouter = ["langchain-openai>=1.0"]
+google = ["langchain-google-genai>=3.0"]
+search = ["langchain-tavily>=0.1"]
+all = [
+    "langchain-openai>=1.0",
+    "langchain-google-genai>=3.0",
+    "langchain-tavily>=0.1",
+]
+dev = [
+    "langchain-openai>=1.0",
+    "langchain-google-genai>=3.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+general-agent = "general_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/general_agent"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# Vendored agent-skill packs; not this project's code to lint.
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
