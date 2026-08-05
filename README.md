@@ -59,8 +59,10 @@ It is **pinned to a commit** rather than tracking a branch: the project publishe
 no tags or releases yet and its version has stayed `0.1.0` across changes, so an
 unpinned URL would install whatever `HEAD` happens to be — two people running the
 same command on different days would get different code, with nothing in the
-package metadata to tell them apart. To take a newer middleware, bump the SHA in
-`pyproject.toml` deliberately and re-run the tests.
+package metadata to tell them apart.
+
+The cost of a pin is that an upstream fix never arrives on its own, so CI
+watches for one — see [Keeping the pin current](#keeping-the-pin-current).
 
 ## Configuration
 
@@ -231,6 +233,29 @@ pytest
 ruff check .
 ```
 
+CI (`.github/workflows/ci.yml`) runs lint and tests on every push and pull
+request, against Python 3.11 and 3.13.
+
+### Keeping the pin current
+
+A pinned dependency doesn't update itself, so a second CI job — weekly, plus
+`workflow_dispatch` — compares the pinned SHA against upstream `main` and opens
+(or refreshes) a `dependencies` issue when it falls behind. One open issue at a
+time, rather than a fresh one every week.
+
+Run it yourself any time:
+
+```bash
+python scripts/check_middleware_pin.py           # report only
+python scripts/check_middleware_pin.py --bump    # rewrite the pin to upstream HEAD
+```
+
+Exit codes are `0` up to date, `1` behind, `2` couldn't reach the remote — so it
+composes into other checks. After a `--bump`, reinstall and run the tests: the
+trace-shape assertions in `tests/test_agent.py` are what tell you whether the new
+middleware still produces the observation names this project's Langfuse
+dashboards depend on.
+
 The suite uses a fake chat model, synthetic 429s and a recording tracing backend,
 so it runs offline and makes no network calls.
 
@@ -244,6 +269,9 @@ src/general_agent/
 ├── observability.py   Langfuse client, callbacks, scores — and the no-op fallback
 ├── runner.py          AgentRunner: one question → one trace
 └── cli.py             one-shot and interactive entry points
+
+scripts/
+└── check_middleware_pin.py   reports (or bumps) a stale middleware pin
 ```
 
 ## Agent skills

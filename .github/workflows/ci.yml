@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Weekly, Monday 06:00 UTC — the pin check has nothing to do on a push,
+    # so it needs a clock of its own.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the project claims to support, and current.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check src tests
+
+      - name: Test
+        run: pytest -q
+
+  middleware-pin:
+    name: middleware pin
+    # A pin means a fix upstream never arrives on its own. This is what
+    # notices. Scheduled and manual only: it reports on the state of an
+    # external repo, so running it per-push would just be noise.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Compare the pin against upstream
+        id: check
+        run: |
+          set +e
+          output="$(python scripts/check_middleware_pin.py)"
+          status=$?
+          set -e
+          echo "$output"
+          {
+            echo "report<<EOF"
+            echo "$output"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          # A failure to reach the remote (2) should fail the job; being
+          # behind (1) is the expected finding, reported as an issue below.
+          if [ "$status" -eq 2 ]; then exit 1; fi
+
+      - name: Open an issue when behind
+        if: steps.check.outputs.status == '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Middleware pin is behind upstream';
+            const report = `${{ toJSON(steps.check.outputs.report) }}`;
+            const body = [
+              JSON.parse(report),
+              '',
+              'To take the update:',
+              '',
+              '```bash',
+              'python scripts/check_middleware_pin.py --bump',
+              'pip install -e ".[dev]" && pytest -q',
+              '```',
+              '',
+              'Bump deliberately — read the upstream diff first, and check the',
+              'trace-shape assertions in tests/test_agent.py still hold.',
+            ].join('\n');
+
+            // One open issue at a time; refresh it rather than filing a new
+            // one every week.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'dependencies',
+            });
+            const match = existing.data.find((issue) => issue.title === title);
+
+            if (match) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['dependencies'],
+              });
+            }
